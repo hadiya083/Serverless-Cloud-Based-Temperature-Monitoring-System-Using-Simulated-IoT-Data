@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IoT Temperature Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #f4f6f9; --card: #ffffff; --text: #1c2430; --muted: #6b7686; --line: #e3e8ef;
+    --ok: #1a8f4c; --ok-bg: #e5f6ec; --bad: #d12b2b; --bad-bg: #fde8e8; --accent: #2563eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #11151c; --card: #1a212b; --text: #e7ecf3; --muted: #8b97a8; --line: #2a3340;
+            --ok: #4cc77f; --ok-bg: #16301f; --bad: #ff6b6b; --bad-bg: #3a1c1c; --accent: #6ea0ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--text); }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px; }
+  h1 { font-size: 1.35rem; margin: 0; }
+  .controls { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: .9rem; }
+  input { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); width: 130px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .label { font-size: .8rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .value { font-size: 2rem; font-weight: 600; margin-top: 4px; }
+  .badge { display: inline-block; margin-top: 8px; padding: 4px 12px; border-radius: 999px; font-weight: 600; font-size: .9rem; }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); }
+  .badge.bad { background: var(--bad-bg); color: var(--bad); }
+  .chart-card { height: 340px; }
+  table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+  td.hot { color: var(--bad); font-weight: 600; }
+  #msg { color: var(--muted); font-size: .85rem; margin-top: 12px; }
+  #msg.error { color: var(--bad); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>IoT Temperature Monitor</h1>
+    <div class="controls">
+      <label for="device">Device</label>
+      <input id="device" value="sensor-01">
+      <span id="updated">-</span>
+    </div>
+  </header>
+
+  <div class="grid">
+    <div class="card"><div class="label">Temperature</div><div class="value" id="temp">--</div></div>
+    <div class="card"><div class="label">Humidity</div><div class="value" id="hum">--</div></div>
+    <div class="card"><div class="label">Status</div><span class="badge ok" id="status">WAITING</span>
+      <div class="label" style="margin-top:8px">Threshold <span id="thr">--</span></div></div>
+  </div>
+
+  <div class="card chart-card"><canvas id="chart"></canvas></div>
+
+  <div class="card" style="margin-top:16px">
+    <table>
+      <thead><tr><th>Time</th><th>Temperature</th><th>Humidity</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div id="msg"></div>
+</div>
+
+<script>
+  // >>> Paste your API Gateway URL here, e.g.
+  //     https://abc123xyz.execute-api.ap-south-1.amazonaws.com/readings
+ const API_URL = "https://xanfked5wg.execute-api.ap-south-1.amazonaws.com/readings";
+  const REFRESH_MS = 5000;
+
+  const $ = (id) => document.getElementById(id);
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  const chart = new Chart($("chart"), {
+    type: "line",
+    data: { labels: [], datasets: [
+      { label: "Temperature (°C)", data: [], borderColor: css("--accent"), backgroundColor: css("--accent"),
+        tension: 0.25, pointRadius: 3, pointBackgroundColor: [] },
+      { label: "Threshold", data: [], borderColor: css("--bad"), borderDash: [6, 6], pointRadius: 0, borderWidth: 1.5 }
+    ]},
+    options: { responsive: true, maintainAspectRatio: false, animation: false,
+      scales: { y: { title: { display: true, text: "°C" } } } }
+  });
+
+  function setMessage(text, isError) {
+    $("msg").textContent = text;
+    $("msg").className = isError ? "error" : "";
+  }
+
+  async function refresh() {
+    if (API_URL.startsWith("PASTE")) {
+      setMessage("Set API_URL at the top of the script in index.html first.", true);
+      return;
+    }
+    const device = $("device").value.trim() || "sensor-01";
+    try {
+      const res = await fetch(`${API_URL}?device_id=${encodeURIComponent(device)}&limit=30`);
+      if (!res.ok) throw new Error("API returned " + res.status);
+      const data = await res.json();
+      render(data);
+      setMessage("");
+    } catch (err) {
+      setMessage("Could not load data: " + err.message, true);
+    }
+  }
+
+  function render(data) {
+    const readings = data.readings;
+    $("thr").textContent = data.threshold + " °C";
+    $("updated").textContent = "Updated " + new Date().toLocaleTimeString();
+    if (!readings.length) { setMessage("No readings yet for this device. Start the simulator.", false); return; }
+
+    const last = readings[readings.length - 1];
+    const hot = last.temperature > data.threshold;
+    $("temp").textContent = last.temperature.toFixed(1) + " °C";
+    $("hum").textContent = last.humidity != null ? last.humidity.toFixed(1) + " %" : "--";
+    $("status").textContent = hot ? "ALERT" : "NORMAL";
+    $("status").className = "badge " + (hot ? "bad" : "ok");
+
+    chart.data.labels = readings.map(r => new Date(r.ts).toLocaleTimeString());
+    chart.data.datasets[0].data = readings.map(r => r.temperature);
+    chart.data.datasets[0].pointBackgroundColor = readings.map(r => r.temperature > data.threshold ? css("--bad") : css("--accent"));
+    chart.data.datasets[1].data = readings.map(() => data.threshold);
+    chart.update();
+
+    const tbody = $("rows");
+    tbody.textContent = "";
+    readings.slice(-10).reverse().forEach(r => {
+      const tr = document.createElement("tr");
+      const cells = [new Date(r.ts).toLocaleTimeString(), r.temperature.toFixed(1) + " °C",
+                     r.humidity != null ? r.humidity.toFixed(1) + " %" : "--"];
+      cells.forEach((text, i) => {
+        const td = document.createElement("td");
+        td.textContent = text;
+        if (i === 1 && r.temperature > data.threshold) td.className = "hot";
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  refresh();
+  setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
